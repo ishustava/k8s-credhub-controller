@@ -25,7 +25,6 @@ import (
 	samplescheme "github.com/ishustava/k8s-credhub-controller/pkg/client/clientset/versioned/scheme"
 	informers "github.com/ishustava/k8s-credhub-controller/pkg/client/informers/externalversions/credhubsecret/v1"
 	listers "github.com/ishustava/k8s-credhub-controller/pkg/client/listers/credhubsecret/v1"
-	"encoding/base64"
 	"reflect"
 )
 
@@ -123,7 +122,6 @@ func NewController(
 			}
 			controller.handleObject(new)
 		},
-		DeleteFunc: controller.handleObject,
 	})
 
 	return controller
@@ -147,7 +145,6 @@ func (c *Controller) Run(threadiness int, stopCh <-chan struct{}) error {
 	}
 
 	glog.Info("Starting workers")
-	// Launch two workers to process Foo resources
 	for i := 0; i < threadiness; i++ {
 		go wait.Until(c.runWorker, time.Second, stopCh)
 	}
@@ -244,18 +241,8 @@ func (c *Controller) syncHandler(key string) error {
 		return err
 	}
 
-	// todo: not sure we need this logic
-	secretName := credhubSecret.Spec.SecretName
-	if secretName == "" {
-		// We choose to absorb the error here as the worker would requeue the
-		// resource otherwise. Instead, the next time the resource is updated
-		// the resource will be queued again.
-		runtime.HandleError(fmt.Errorf("%s: secret name must be specified", key))
-		return nil
-	}
-
 	// Get the secret with the name specified in CredhubSecret.spec
-	secret, err := c.secretsLister.Secrets(credhubSecret.Namespace).Get(secretName)
+	secret, err := c.secretsLister.Secrets(credhubSecret.Namespace).Get(credhubSecret.Name)
 	// If the resource doesn't exist, we'll create it
 	newSecret := generateSecret(credhubSecret)
 	if errors.IsNotFound(err) {
@@ -281,6 +268,7 @@ func (c *Controller) syncHandler(key string) error {
 	// number does not equal the current desired replicas on the Deployment, we
 	// should update the Deployment resource.
 	if !reflect.DeepEqual(secret.Data, newSecret.Data)  {
+		glog.Infof("Updating secret %s", secret.Name)
 		secret, err = c.kubeclientset.CoreV1().Secrets(credhubSecret.Namespace).Update(newSecret)
 	}
 
@@ -291,28 +279,7 @@ func (c *Controller) syncHandler(key string) error {
 		return err
 	}
 
-	// Finally, we update the status block of the Foo resource to reflect the
-	// current state of the world
-	err = c.updateCredhubSecretStatus(credhubSecret, secret)
-	if err != nil {
-		return err
-	}
-
 	c.recorder.Event(credhubSecret, corev1.EventTypeNormal, SuccessSynced, MessageResourceSynced)
-	return nil
-}
-
-func (c *Controller) updateCredhubSecretStatus(credhubSecret *credhubsecretv1.CredhubSecret, secret *corev1.Secret) error {
-	// NEVER modify objects from the store. It's a read-only, local cache.
-	// You can use DeepCopy() to make a deep copy of original object and modify this copy
-	// Or create a copy manually for better performance
-	//credhubSecretCopy := credhubSecret.DeepCopy()
-	//credhubSecretCopy.Status.AvailableReplicas = secret.Status.AvailableReplicas
-	// If the CustomResourceSubresources feature gate is not enabled,
-	// we must use Update instead of UpdateStatus to update the Status block of the Foo resource.
-	// UpdateStatus will not allow changes to the Spec of the resource,
-	// which is ideal for ensuring nothing other than resource status has been updated.
-	//_, err := c.generatedSecretClientSet.SamplecontrollerV1alpha1().Foos(credhubSecret.Namespace).Update(credhubSecretCopy)
 	return nil
 }
 
@@ -374,15 +341,9 @@ func (c *Controller) handleObject(obj interface{}) {
 // the Foo resource that 'owns' it.
 func generateSecret(credhubSecret *credhubsecretv1.CredhubSecret) *corev1.Secret {
 	// todo: stop hard-coding data
-	var encodedPassword []byte
-	base64.StdEncoding.Encode([]byte("testpassword"), encodedPassword)
-	hardCodedSecret := map[string][]byte{
-		"password": encodedPassword,
-	}
-
 	return &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      credhubSecret.Spec.SecretName,
+			Name:      credhubSecret.Name,
 			Namespace: credhubSecret.Namespace,
 			OwnerReferences: []metav1.OwnerReference{
 				*metav1.NewControllerRef(credhubSecret, schema.GroupVersionKind{
@@ -392,7 +353,9 @@ func generateSecret(credhubSecret *credhubsecretv1.CredhubSecret) *corev1.Secret
 				}),
 			},
 		},
-		Data: hardCodedSecret,
+		Data: map[string][]byte{
+			"password": []byte("testpassword"),
+		},
 		Type: corev1.SecretTypeOpaque,
 	}
 }

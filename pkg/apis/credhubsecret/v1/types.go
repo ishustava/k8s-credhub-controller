@@ -32,8 +32,7 @@ type CredhubSecretSpec struct {
 	// Message and SomeValue are example custom spec fields
 	//
 	// this is where you would put your custom resource data
-	SecretName string `json:"name"`
-	//Value interface{} `json:"value"`
+	Type string `json:"type"`
 	Parameters *CredhubParameters `json:"parameters"`
 }
 
