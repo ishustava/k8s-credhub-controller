@@ -1,3 +1,3 @@
-package generatedsecret
+package credhubsecret
 
 const GroupName = "pivotal.io"
