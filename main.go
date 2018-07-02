@@ -14,11 +14,17 @@ import (
 	clientset "github.com/ishustava/k8s-credhub-controller/pkg/client/clientset/versioned"
 	informers "github.com/ishustava/k8s-credhub-controller/pkg/client/informers/externalversions"
 	"github.com/ishustava/k8s-credhub-controller/pkg/signals"
+	"code.cloudfoundry.org/credhub-cli/credhub/auth"
+	"code.cloudfoundry.org/credhub-cli/credhub"
 )
 
 var (
-	masterURL  string
+	credhubURL          string
+	credhubClient       string
+	credhubClientSecret string
+
 	kubeconfig string
+	masterURL  string
 )
 
 func main() {
@@ -42,10 +48,23 @@ func main() {
 		glog.Fatalf("Error building example clientset: %s", err.Error())
 	}
 
+	credhubClient, err := credhub.New(
+		credhubURL,
+		credhub.SkipTLSValidation(true),
+		credhub.Auth(
+			auth.UaaClientCredentials(credhubClient, credhubClientSecret)),
+	)
+	if err != nil {
+		glog.Fatalf("Error creating credhub client: %s", err.Error())
+	}
+
 	kubeInformerFactory := kubeinformers.NewSharedInformerFactory(kubeClient, time.Second*30)
 	credhubSecretInformerFactory := informers.NewSharedInformerFactory(credhubControllerClient, time.Second*30)
 
-	controller := NewController(kubeClient, credhubControllerClient,
+	controller := NewController(
+		kubeClient,
+		credhubControllerClient,
+		credhubClient,
 		kubeInformerFactory.Core().V1().Secrets(),
 		credhubSecretInformerFactory.Pivotal().V1().CredhubSecrets())
 
@@ -59,5 +78,8 @@ func main() {
 
 func init() {
 	flag.StringVar(&kubeconfig, "kubeconfig", "", "Path to a kubeconfig. Only required if out-of-cluster.")
-	flag.StringVar(&masterURL, "master", "", "The address of the Kubernetes API server. Overrides any value in kubeconfig. Only required if out-of-cluster.")
+	flag.StringVar(&masterURL, "master", "", "The address of the Kubernetes API serverOma. Overrides any value in kubeconfig. Only required if out-of-cluster.")
+	flag.StringVar(&credhubURL, "credhuburl", "", "The URL of the CredHub server, e.g. https://my-credhub.com:8844")
+	flag.StringVar(&credhubClient, "credhubclient", "", "UAA client name that is authorized to talk to CredHub")
+	flag.StringVar(&credhubClientSecret, "credhubclientsecret", "", "Secret of the UAA client that is authorized to talk to CredHub")
 }

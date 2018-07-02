@@ -26,6 +26,7 @@ import (
 	informers "github.com/ishustava/k8s-credhub-controller/pkg/client/informers/externalversions/credhubsecret/v1"
 	listers "github.com/ishustava/k8s-credhub-controller/pkg/client/listers/credhubsecret/v1"
 	"reflect"
+	"code.cloudfoundry.org/credhub-cli/credhub"
 )
 
 const controllerAgentName = "credhub-controller"
@@ -66,12 +67,16 @@ type Controller struct {
 	// recorder is an event recorder for recording Event resources to the
 	// Kubernetes API.
 	recorder record.EventRecorder
+
+	// A client to generate and store secrets in CredHub
+	credhubClient *credhub.CredHub
 }
 
 // NewController returns a new sample controller
 func NewController(
 	kubeclientset kubernetes.Interface,
 	credhubSecretClientSet clientset.Interface,
+	credhubClient *credhub.CredHub,
 	secretInformer coreinformers.SecretInformer,
 	credhubSecretInformer informers.CredhubSecretInformer) *Controller {
 
@@ -94,6 +99,7 @@ func NewController(
 		generatedSecretsSynced:   credhubSecretInformer.Informer().HasSynced,
 		workqueue:                workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "CredhubSecrets"),
 		recorder:                 recorder,
+		credhubClient:            credhubClient,
 	}
 
 	glog.Info("Setting up event handlers")
@@ -244,7 +250,7 @@ func (c *Controller) syncHandler(key string) error {
 	// Get the secret with the name specified in CredhubSecret.spec
 	secret, err := c.secretsLister.Secrets(credhubSecret.Namespace).Get(credhubSecret.Name)
 	// If the resource doesn't exist, we'll create it
-	newSecret := generateSecret(credhubSecret)
+	newSecret := c.generateSecret(credhubSecret)
 	if errors.IsNotFound(err) {
 		secret, err = c.kubeclientset.CoreV1().Secrets(credhubSecret.Namespace).Create(newSecret)
 	}
@@ -267,7 +273,7 @@ func (c *Controller) syncHandler(key string) error {
 	// If this number of the replicas on the CredhubSecret resource is specified, and the
 	// number does not equal the current desired replicas on the Deployment, we
 	// should update the Deployment resource.
-	if !reflect.DeepEqual(secret.Data, newSecret.Data)  {
+	if !reflect.DeepEqual(secret.Data, newSecret.Data) {
 		glog.Infof("Updating secret %s", secret.Name)
 		secret, err = c.kubeclientset.CoreV1().Secrets(credhubSecret.Namespace).Update(newSecret)
 	}
@@ -339,8 +345,17 @@ func (c *Controller) handleObject(obj interface{}) {
 // generateSecret creates a new Secret for a CredhubSecret resource. It also sets
 // the appropriate OwnerReferences on the resource so handleObject can discover
 // the Foo resource that 'owns' it.
-func generateSecret(credhubSecret *credhubsecretv1.CredhubSecret) *corev1.Secret {
-	// todo: stop hard-coding data
+func (c *Controller) generateSecret(credhubSecret *credhubsecretv1.CredhubSecret) *corev1.Secret {
+	generated, err := c.credhubClient.GenerateCredential(credhubSecret.Namespace + "/" + credhubSecret.Name, credhubSecret.Spec.Type, credhubSecret.Spec.Parameters, credhub.Converge)
+	if err != nil {
+		runtime.HandleError(fmt.Errorf("error from CredHub: %s", err.Error()))
+	}
+	var data map[string][]byte
+	if passwordValue, ok := generated.Value.(string); ok {
+		data = map[string][]byte{
+			"password": []byte(passwordValue),
+		}
+	}
 	return &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      credhubSecret.Name,
@@ -353,9 +368,7 @@ func generateSecret(credhubSecret *credhubsecretv1.CredhubSecret) *corev1.Secret
 				}),
 			},
 		},
-		Data: map[string][]byte{
-			"password": []byte("testpassword"),
-		},
+		Data: data,
 		Type: corev1.SecretTypeOpaque,
 	}
 }
